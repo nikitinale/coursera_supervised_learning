@@ -1,0 +1,59 @@
+import sys
+import json
+import re
+
+def words_clearing(words, remove_hash = True):
+    new_words = []
+    for word in words :
+        word = word.lower().strip().replace('_', '')
+        if remove_hash : word = word.replace('#', ' ')
+        word = re.sub(r'([\W])+$', '', word)
+        word = re.sub(r'^([\W])+', '', word)
+        word = re.sub(r"[\W][st]$", '', word)
+        if re.search(r'^http', word) or re.search(r'[^a-z]', word) or len(word)<2 :
+            continue
+        word = re.sub(r'[\W]', '', word)
+        new_words.append(word)
+    return new_words
+
+def make_bag(tweet) :
+    try :
+        words = tweet['text'].split(' ')
+    except KeyError :
+        return []
+    words = words_clearing(words)
+    return words
+
+def update_vocabulary(words, vocabulary):
+    for word in words :
+        if word in vocabulary :
+            vocabulary[word] += 1
+        else :
+            vocabulary[word] = 1
+    return vocabulary
+
+def calculate_total_words(vocabulary) :
+    sum = 0
+    for word in vocabulary :
+        sum += vocabulary[word]
+    return sum
+
+def calculate_frequency(n, total) :
+    f = float(n)/float(total)
+    return f
+
+def main():
+    tweet_file = open(sys.argv[1])
+    vocabulary = {}
+
+    for tweet in tweet_file:
+        bag_of_words = make_bag(json.loads(tweet.strip()))
+        vocabulary = update_vocabulary(bag_of_words, vocabulary)
+
+    total = calculate_total_words(vocabulary)
+    for word in sorted(vocabulary, key=vocabulary.get, reverse=False) :
+        line = word + ' ' + str(calculate_frequency(vocabulary[word], total))
+        print line
+
+if __name__ == '__main__':
+    main()
