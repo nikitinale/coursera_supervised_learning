@@ -1,0 +1,465 @@
+#+TITLE: Решение задачи kaggle по оценке прибыли от фильма для курса
+
+* Обоснование выбора
+
+* Подключение библиотек и глобальные переменные
+#+BEGIN_SRC python :results silent :exports code  :tangle movie_reveneu.py
+
+import sys
+import json
+import re
+import csv
+import json
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn import preprocessing
+from sklearn import metrics
+from sklearn.ensemble import ExtraTreesClassifier
+from sklearn.feature_selection import RFE
+from sklearn.linear_model import LinearRegression
+from sklearn.naive_bayes import GaussianNB
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.svm import SVC
+from sklearn.linear_model import Ridge
+from scipy.stats import uniform as sp_rand
+from sklearn.model_selection import RandomizedSearchCV
+#import xgboost as xgb
+#import lightgbm as lgb
+#import catboost as cat
+from sklearn.linear_model import ElasticNet
+from sklearn.datasets import make_regression
+from sklearn.neighbors import KNeighborsRegressor
+from sklearn.model_selection import train_test_split
+from sklearn.model_selection import cross_val_score
+from sklearn.model_selection import cross_validate
+from sklearn.model_selection import train_test_split
+from sklearn.svm import SVR
+from sklearn.tree import DecisionTreeRegressor
+from sklearn.feature_selection import SelectFromModel
+from sklearn.feature_selection import f_regression
+import xgboost as xgb
+from sklearn.metrics import mean_squared_log_error
+from sklearn.metrics import mean_squared_error
+from math import sqrt
+traindata='train.csv'
+import re
+
+reap = re.compile(r"([a-zA-Z]'[a-zA-Z])")
+
+#+END_SRC
+
+* Старые функции
+#+BEGIN_SRC python :results silent :exports code  :tangle movie_reveneu.py
+
+def words_clearing(words, remove_hash = True):
+    new_words = []
+    for word in words :
+        word = word.lower().strip().replace('_', '')
+        if remove_hash : word = word.replace('#', ' ')
+        word = re.sub(r'([\W])+$', '', word)
+        word = re.sub(r'^([\W])+', '', word)
+        word = re.sub(r"[\W][st]$", '', word)
+        if re.search(r'^http', word) or re.search(r'[^a-z]', word) or len(word)<2 :
+            continue
+        word = re.sub(r'[\W]', '', word)
+        new_words.append(word)
+    return new_words
+
+def make_bag(tweet) :
+    try :
+        words = tweet['text'].split(' ')
+    except KeyError :
+        return []
+    words = words_clearing(words)
+    return words
+
+def update_vocabulary(words, vocabulary):
+    for word in words :
+        if word in vocabulary :
+            vocabulary[word] += 1
+        else :
+            vocabulary[word] = 1
+    return vocabulary
+
+def calculate_total_words(vocabulary) :
+    sum = 0
+    for word in vocabulary :
+        sum += vocabulary[word]
+    return sum
+
+def calculate_frequency(n, total) :
+    f = float(n)/float(total)
+    return f
+
+def make_scores(sent_file) :
+    scores = {}
+    for line in sent_file:
+        term, score = line.split("\t")
+        scores[term] = int(score)
+    return scores
+
+def neg_assess(tweet, scores):
+    try :
+        words = tweet.split(' ')
+    except KeyError :
+        return 0
+    neg_sentiment = 0
+    words = words_clearing(words)
+    for word in words :
+        if word in scores :
+            if scores[word] < 0 :
+                neg_sentiment += -1*scores[word]
+    return neg_sentiment
+
+def pos_assess(tweet, scores):
+    try :
+        words = tweet.split(' ')
+    except KeyError :
+        return 0
+    pos_sentiment = 0
+    words = words_clearing(words)
+    for word in words :
+        if word in scores :
+            if scores[word] > 0 :
+                pos_sentiment += scores[word]
+    return pos_sentiment
+
+#+END_SRC
+
+* Основной модуль
+** Первичный анализ данных
+#+BEGIN_SRC python :results silent :exports code  :tangle movie_reveneu.py
+def rmsle(y, y0) :
+    #y = [x if x>0 else 0 for x in y]
+    #y0 = [x if x>0 else 0 for x in y0]
+    return np.sqrt(np.mean(np.square(np.log1p(y) - np.log1p(y0))))
+
+def main():
+    df = pd.read_csv(traindata)
+    df['status'] = pd.get_dummies(df['status'])
+    df['homepage'] = pd.get_dummies(df['homepage'].notnull()) # apply((lambda x: x if x==pd.NaN else 1))
+    temp_df = pd.get_dummies(df['original_language'])
+    #print(temp_df.sum())
+    temp_df = temp_df[['en', 'fr', 'hi', 'ja', 'ru']]
+    df['spoken_languages'] = df['spoken_languages'].fillna(value="[{'iso_0': 'any', 'name': 'ANY'}]")
+    temp_df['num_lang'] = df['spoken_languages'].apply(lambda z: len(json.loads(str(z).replace("'",'"'))))
+    sent_file = open('AFINN-111.txt')
+    scores = make_scores(sent_file)
+    #df['production_companies'] = df['production_companies'].fillna(value="[{'iso_0': 'any', 'name': 'ANY'}]")
+    #for i in range(3000) :
+    #    print(reap.sub('', str(df['production_companies'].iloc[i])).replace("Donners' Company", 'Donners').replace("O'Connor Brothers","Connor Brothers").replace("d'Azur","dAzur").replace("l'Audiovisuel","lAudiovisuel").replace("d'Animation","dAnimation").replace("Mel's", "Mels").replace("Kids'", 'Kids').replace("\\xa0",'').strip())
+    #    json.loads( reap.sub('', str(df['production_companies'].iloc[i])).replace("Donners' Company", 'Donners').replace("O'Connor Brothers","Connor Brothers").replace("d'Azur","dAzur").replace("Mel's", "Mels").replace("d'Animation","dAnimation").replace("l'Audiovisuel","lAudiovisuel").replace("\\xa0",'').replace('"Tor"','Tor').replace('"DIA"', 'DIA').replace("Kids'", 'Kids').replace('"Tsar"', 'Tsar').replace("Gettin'", "Gettin").replace("'",'"').strip() )
+    
+    #temp_df['num_comp'] = df['production_companies'].apply(lambda z: len(json.loads(str(z).replace("'",'"'))))
+    df['production_countries'] = df['production_countries'].fillna(value="[{'iso_0': 'any', 'name': 'ANY'}]")
+    temp_df['num_cont'] = df['production_countries'].apply(lambda z: len(json.loads(str(z).replace("'",'"'))))
+
+    df['overview'] = df['overview'].fillna(value="")
+    df['tagline'] = df['tagline'].fillna(value="")
+    df['len_tagline'] = df['tagline'].apply(lambda x: len(x))
+    df['belongs_to_collection'] = df['belongs_to_collection'].fillna(value='NO')
+    df['belongs_to_collection'] = df['belongs_to_collection'].apply(lambda x: 0 if x=='NO' else 1)    
+    df['words_in_tagline'] = df['tagline'].apply(lambda x: len(x.split(' ')))
+    df['len_overview'] = df['overview'].apply(lambda x: len(x))
+    df['words_in_overview'] = df['overview'].apply(lambda x: len(x.split(' ')))    
+    df['len_title'] = df['title'].apply(lambda x: len(x))
+    temp_df['neg_title'] = df['title'].apply(lambda x: neg_assess(x.strip(), scores))
+    temp_df['pos_title'] = df['title'].apply(lambda x: pos_assess(x.strip(), scores))
+    temp_df['neg_tagline'] = df['tagline'].apply(lambda x: neg_assess(x.strip(), scores))
+    temp_df['pos_tagline'] = df['tagline'].apply(lambda x: pos_assess(x.strip(), scores))
+    temp_df['neg_overview'] = df['overview'].apply(lambda x: neg_assess(x.strip(), scores))
+    temp_df['pos_overview'] = df['overview'].apply(lambda x: pos_assess(x.strip(), scores))
+
+    df = df.join(temp_df)
+    df['words_in_title'] = df['title'].apply(lambda x: len(x.split(' ')))
+    df[['release_month','release_day','release_year']]=df['release_date'].str.split('/',expand=True).replace(np.nan, 0).astype(int)
+    df['release_year'] = df['release_year']
+    df.loc[ (df['release_year'] <= 18) & (df['release_year'] < 100), "release_year"] += 2000
+    df.loc[ (df['release_year'] > 18)  & (df['release_year'] < 100), "release_year"] += 1900
+    
+    print(df.columns)
+    print(df.info())
+    print(df.corr()['revenue'])
+    #sns.heatmap(df.corr(), cmap='YlGnBu', annot=True, linewidths = 0.2);
+    #plt.show()
+    #sns.jointplot(df.budget, df.revenue);
+    #sns.jointplot(df.popularity, df.revenue);
+    #sns.jointplot(df.runtime, df.revenue);
+    #plt.show()
+    X = df[['budget', 'popularity', 'runtime', 'status', 'homepage', 'en', 'fr', 'hi', 'ja', 'ru', 'num_lang', 'num_cont', 'len_title', 'words_in_title', 'len_tagline', 'words_in_tagline', 'len_overview', 'words_in_overview', 'release_year', 'belongs_to_collection', 'neg_title', 'pos_title', 'neg_tagline', 'pos_tagline', 'neg_overview', 'pos_overview']]
+    #X['budget'] = np.log1p(X['budget'])
+    Y = np.log1p(df['revenue'])
+    print(Y.min())
+    average_revenue=df['revenue'].mean()
+    median_revenue=df['revenue'].median()
+    print(average_revenue)
+    fills = {'budget': 2.25e+7, 'popularity': 8.46, 'runtime': 107.85}
+    X = X.fillna(value=fills)
+    X['budget'] = np.log1p(X['budget'])
+    X = pd.DataFrame(preprocessing.normalize(X), columns = X.columns)
+
+    aver = np.ones(Y.size)*average_revenue
+    print("Dummy evaluation = {}".format(sqrt(mean_squared_error(Y, aver))))
+    aver2 = np.ones(Y.size)*median_revenue
+    print("Dummy evaluation 2 = {}".format(sqrt(mean_squared_error(Y, aver2))))
+    selt = X.columns
+    XX = X.copy()
+    while len(selt) > 2 :
+        F, p = f_regression(XX, Y)
+        maks = p.max()
+        mins = F.min()
+        selt = [XX.columns[i] for i,x in enumerate(p) if x <= maks-(maks/1000)]
+        print(selt)
+        model = LinearRegression()
+        cross = cross_val_score(model, XX[selt], Y, cv=5, scoring='neg_mean_squared_error')
+        print(sqrt(-1*np.array(cross).mean()))
+        XX = XX[selt]
+        if len(selt) <= 1: break
+
+    selt = X.columns
+    XX = X.copy()
+    while len(selt) > 2 :
+        F, p = f_regression(XX, Y)
+        maks = p.max()
+        mins = F.min()
+        selt = [XX.columns[i] for i,x in enumerate(p) if x <= maks-(maks/1000)]        
+        print(selt)
+        model = ElasticNet(random_state=0)
+        cross = cross_val_score(model, XX[selt], Y, cv=5, scoring='neg_mean_squared_error')
+        print(sqrt(-1*np.array(cross).mean()))
+        XX = XX[selt]
+        if len(selt) <= 1: break
+
+    selt = X.columns
+    XX = X.copy()
+    while len(selt) > 2 :
+        F, p = f_regression(XX, Y)
+        maks = p.max()
+        mins = F.min()
+        selt = [XX.columns[i] for i,x in enumerate(p) if x <= maks-(maks/1000)]        
+        print(selt)
+        for nei in range(2,50) :
+            model = KNeighborsRegressor(n_neighbors=nei, weights='distance')
+            cross = cross_val_score(model, XX[selt], Y, cv=5, scoring='neg_mean_squared_error')
+            print("- {0} Neighbors Regression test evaluation = {1}".format(nei, sqrt(-1*np.array(cross).mean())))
+            XX = XX[selt]
+            if len(selt) <= 1: break
+
+    selt = X.columns
+    XX = X.copy()
+    while len(selt) > 2 :
+        F, p = f_regression(XX, Y)
+        maks = p.max()
+        mins = F.min()
+        selt = [XX.columns[i] for i,x in enumerate(p) if x <= maks-(maks/1000)]        
+        print(selt)
+        X_train, X_test, y_train, y_test = train_test_split(XX[selt], Y, test_size=0.1, random_state = 155)
+        dtrain = xgb.DMatrix(X_train, y_train)
+        model = xgb.XGBRegressor(max_depth=5, 
+                     learning_rate=0.01, 
+                     n_estimators=10000, 
+                     objective='reg:linear', 
+                     gamma=1.45, 
+                     silent=True,
+                     subsample=0.8, 
+                     colsample_bytree=0.7, 
+                     colsample_bylevel=0.5)
+        cross = cross_val_score(model, XX[selt], Y, cv=5, scoring='neg_mean_squared_error')
+        print("XG Boost train evaluation = {0}".format(sqrt(-1*np.array(cross).mean())))
+        XX = XX[selt]
+        if len(selt) <= 1: break
+
+# https://github.com/saumiko/Movie-Revenue-Prediction/blob/master/Codes/SaveFeatures/Final.py
+# https://www.kaggle.com/c/tmdb-box-office-prediction/data
+
+if __name__ == '__main__':
+    main()
+
+#+END_SRC
+
+* Description
+The dataset includes only 4 numerical variables. Besides revenue, they are budget, popularity and runtime. Budget has the strongest correlation with reveneu followed by popularity.
+
+I fill NaN elements in runtime with mean value for runtime in dataset (107.85). On the next step, I have separated target varible (revenue) and independent numerical variables. 
+
+I convert revenue to its logarithm bacause it had log-normal distribution.
+
+I try linear regression, elastic net linear model, regression based on k-nearest neighbors, and XGBoost model.
+
+['budget', 'popularity', 'runtime', 'en']
+2.615188859253189
+['budget', 'popularity', 'runtime', 'status', 'homepage', 'en', 'fr', 'hi', 'ru', 'release_year']
+2.62911211580282
+['budget', 'popularity', 'runtime', 'status', 'homepage', 'en', 'fr', 'ru', 'release_year']
+- 35 Neighbors Regression test evaluation = 2.3394645214121033
+['budget', 'popularity', 'runtime', 'status', 'homepage', 'en', 'fr', 'hi', 'ru', 'len_title', 'release_year']
+XG Boost train evaluation = 2.2513120055679923
+
+Numerical variables were normalized.
+['budget', 'popularity', 'runtime', 'status', 'homepage', 'en', 'fr', 'hi', 'len_title', 'words_in_title', 'release_year']
+2.6674124017533862
+['budget', 'status', 'release_year']
+3.020899371695413
+['budget', 'popularity', 'runtime', 'status', 'homepage', 'en', 'len_title', 'words_in_title', 'release_year']
+- 43 Neighbors Regression test evaluation = 2.360113367403112
+['budget', 'popularity', 'runtime', 'status', 'homepage', 'en', 'fr', 'hi', 'len_title', 'words_in_title', 'release_year']
+XG Boost train evaluation = 2.332214518424552
+
+I tryed to convert budget to its logarithm bacause it had log-normal distribution. The score of the models became a little bit better.
+['budget', 'popularity', 'runtime', 'homepage', 'en', 'fr']
+2.554862284947667
+['budget', 'popularity', 'runtime', 'status', 'homepage', 'en', 'fr', 'hi', 'ru', 'len_title', 'words_in_title', 'release_year']
+2.5779751135081375
+['budget', 'popularity', 'runtime', 'status', 'homepage', 'en', 'fr', 'hi', 'ru', 'release_year']
+- 17 Neighbors Regression test evaluation = 2.353821254480601
+['budget', 'popularity', 'runtime', 'status', 'homepage', 'en', 'fr', 'hi', 'ru', 'len_title', 'release_year']
+XG Boost train evaluation = 2.25410233649299
+
+Add more variables:
+['budget', 'popularity', 'runtime', 'homepage', 'en', 'fr', 'len_tagline', 'words_in_tagline', 'belongs_to_collection']
+2.4815247205098214
+['budget', 'popularity', 'runtime', 'en', 'len_tagline', 'belongs_to_collection']
+2.559254660826757
+['budget', 'popularity', 'belongs_to_collection']
+- 44 Neighbors Regression test evaluation = 2.3441193125466806
+['budget', 'popularity', 'runtime', 'status', 'homepage', 'en', 'fr', 'ru', 'num_lang', 'num_cont', 'len_tagline', 'words_in_tagline', 'len_overview', 'words_in_overview', 'release_year', 'belongs_to_collection']
+XG Boost train evaluation = 2.2227712753665663
+
+Add sentiments:
+['budget', 'popularity', 'runtime', 'homepage', 'en', 'fr', 'len_tagline', 'words_in_tagline', 'belongs_to_collection']
+2.4815247205098214
+['budget', 'popularity', 'runtime', 'en', 'len_tagline', 'belongs_to_collection']
+2.559254660826757
+['budget', 'popularity', 'belongs_to_collection']
+- 44 Neighbors Regression test evaluation = 2.3441193125466806
+['budget', 'popularity', 'runtime', 'status', 'homepage', 'en', 'fr', 'hi', 'ru', 'num_lang', 'num_cont', 'len_title', 'len_tagline', 'words_in_tagline', 'len_overview', 'words_in_overview', 'release_year', 'belongs_to_collection', 'neg_title', 'neg_tagline', 'pos_tagline']
+XG Boost train evaluation = 2.2156778524544376
+
+No log budget
+['budget', 'popularity', 'runtime', 'homepage', 'en', 'fr', 'num_lang', 'len_tagline', 'words_in_tagline', 'belongs_to_collection']
+2.544750366605757
+['budget', 'popularity', 'runtime', 'status', 'homepage', 'en', 'fr', 'ru', 'num_lang', 'len_tagline', 'words_in_tagline', 'len_overview', 'belongs_to_collection', 'pos_tagline']
+2.5984625200739253
+['budget', 'popularity', 'runtime', 'homepage', 'en', 'len_tagline', 'words_in_tagline', 'belongs_to_collection']
+- 34 Neighbors Regression test evaluation = 2.3919269757983574
+['budget', 'popularity', 'runtime', 'status', 'homepage', 'en', 'fr', 'hi', 'ru', 'num_lang', 'num_cont', 'len_title', 'len_tagline', 'words_in_tagline', 'len_overview', 'words_in_overview', 'release_year', 'belongs_to_collection', 'neg_title', 'neg_tagline', 'pos_tagline']
+XG Boost train evaluation = 2.214577691488943
+
+
+* Куски разные
+#        model.fit(X_train, y_train)
+#        print("XG Boost train evaluation = {0}".format(rmsle(y_train, model.predict(X_train))))
+#        print("XG Boost test evaluation = {0}".format(rmsle(y_test, model.predict(X_test))))
+        XX = XX[selt]
+        if len(selt) <= 2: break
+    
+#        X_train, X_test, y_train, y_test = train_test_split(XX[selt], Y, test_size=0.3, random_state = 13)
+#        model = LinearRegression()
+#        model.fit(X_train, y_train)
+#        #print(model.coef_)
+#        #print(model.intercept_)
+#        #print("Linear regression R2 {}".format(model.score(X_test,y_test)))
+#        print("Linear Regretion train evaluation = {}".format(rmsle(y_train, model.predict(X_train))))
+#        print("Linear Regretion test evaluation = {}".format(rmsle(y_test, model.predict(X_test))))
+#        preds = model.predict(X_test)
+#        #preds = [x if x>0 else 0 for x in preds]
+#        oz = y_test
+#        print("averages test {0} predicted {1} ".format(np.array(oz).mean() ,  np.array(preds).mean()))
+#        print(mean_squared_error(oz, preds))
+#        #plt.scatter(oz, preds )
+        #plt.xlabel('Test')
+        #plt.ylabel('Predicted')
+
+        
+    #Kfolder.validate(train, test, features, xgbmodel, name="xgbfinal", prepare_stacking=True)
+
+#    for nei in range(1,10) :
+#        model = KNeighborsRegressor(n_neighbors=nei, weights='distance')
+#        scores = cross_val_score(model, normalized_X, Y, cv=4)
+#        #model.fit(normalized_X, Y)
+#        #print(model.score(normalized_X,Y))
+#        print("Accuracy: %0.2f (+/- %0.2f)" % (scores.mean(), scores.std() * 2))
+    
+#    F, p = f_regression(normalized_X, Y)
+#    selt_n = [X.columns[i] for i,x in enumerate(p) if x<0.01]
+#    print(selt_n)
+    
+    #print("NEW Elastic Net evaluation = {}".format(rmsle(y_test, sfm.predict(X_test))))
+
+#    selt = X.columns
+#    XX = X.copy()
+#    while len(selt) > 2 :
+#        F, p = f_regression(XX, Y)
+#        maks = p.max()
+#        mins = F.min()
+#        selt = [XX.columns[i] for i,x in enumerate(p) if x <= maks-(maks/1000)]        
+#        print(selt)
+#        for nei in range(1,10) :
+#            X_train, X_test, y_train, y_test = train_test_split(XX, Y, test_size=0.25, random_state = 55)
+#            model = KNeighborsRegressor(n_neighbors=nei, weights='distance')
+#            model.fit(X_train, y_train)
+#            print(model.score(X_test, y_test))
+#            print("- {0} Neighbors Regression test evaluation = {1}".format(nei, rmsle(y_test, model.predict(X_test))))
+#            XX = XX[selt]
+#            if len(selt) <= 2: break
+
+#    selt = X.columns
+#    XX = X.copy()
+#    while len(selt) > 2 :
+#        F, p = f_regression(XX, Y)
+#        maks = p.max()
+#        mins = F.min()
+#        selt = [XX.columns[i] for i,x in enumerate(p) if x <= maks-(maks/1000)]        
+#        print(selt)
+#        X_train, X_test, y_train, y_test = train_test_split(XX, Y, test_size=0.25, random_state = 55)
+#        model = SVR()
+#        model.fit(X_train, y_train)
+#        print(model.score(X_test,y_test))
+#        print(" - SVR train evaluation = {0}".format(rmsle(y_train, model.predict(X_train))))
+#        print(" - SVR test evaluation = {0}".format(rmsle(y_test, model.predict(X_test))))
+#        XX = XX[selt]
+#        if len(selt) <= 2: break
+
+#    selt = X.columns
+#    XX = X.copy()
+#    while len(selt) > 2 :
+#        F, p = f_regression(XX, Y)
+#        maks = p.max()
+#        mins = F.min()
+#        selt = [XX.columns[i] for i,x in enumerate(p) if x <= maks-(maks/1000)]        
+#        print(selt)
+#        X_train, X_test, y_train, y_test = train_test_split(XX, Y, test_size=0.25, random_state = 55)
+#        model = DecisionTreeRegressor()
+#        model.fit(X_train, y_train)
+#        print(model.score(X_test,y_test))
+#        print("Decision Tree train evaluation = {0}".format(rmsle(y_train, model.predict(X_train))))
+#        print("Decision Tree test evaluation = {0}".format(rmsle(y_test, model.predict(X_test))))
+#        XX = XX[selt]
+#        if len(selt) <= 2: break
+
+
+#    data = open(traindata)
+#    vocabulary = {}
+#    columns = False 
+#    
+#    with open(traindata, "r") as sentences_file:
+#        reader = csv.reader(sentences_file, delimiter=',')
+#        i = 0
+#        for row in reader :
+#            if not columns :
+#                columns = row[:]
+#                print(columns)
+#            else :
+#                details = row[:]
+#                print(row)
+#                input(A)
+
+
+    #total = calculate_total_words(vocabulary)
+    #for word in sorted(vocabulary, key=vocabulary.get, reverse=False) :
+        #line = word + ' ' + str(calculate_frequency(vocabulary[word], total))
+        #print line
+
