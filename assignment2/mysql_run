@@ -1,0 +1,15 @@
+SELECT SUM(pw) as rt FROM
+(SELECT docid, did, term, x, count, a1, (count*a1) as pw FROM 
+(SELECT * FROM frequency
+UNION
+SELECT 'q' as docid, 'washington' as term, 1 as count 
+UNION
+SELECT 'q' as docid, 'taxes' as term, 1 as count
+UNION 
+SELECT 'q' as docid, 'treasury' as term, 1 as count)
+JOIN
+(SELECT term as x, count as a1, docid as did FROM frequency)
+ON term = x)
+WHERE docid = 'q' GROUP BY did ORDER BY rt DESC 
+LIMIT 1
+;

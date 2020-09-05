@@ -1,0 +1,1 @@
+SELECT COUNT (*) FROM (SELECT FROM frequency LIMIT 10) x;
